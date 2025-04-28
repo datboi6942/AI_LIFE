@@ -1,0 +1,180 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+{
+  "$schema": "https://raw.githubusercontent.com/getcursor/cursor-rules/main/schema.json",
+
+  // ───────────────────────────────────────────────────────────────
+  //  PROJECT META
+  // ───────────────────────────────────────────────────────────────
+  "projectName": "HiveLife",
+  "description": "Minimal-look, Python-Arcade sandbox where 8×8 pixel blobs evolve advanced collective intelligence.",
+
+  // ───────────────────────────────────────────────────────────────
+  //  LANGUAGE & RUNTIME
+  // ───────────────────────────────────────────────────────────────
+  "primaryLanguage": "python",
+  "runtime": "python3.11",
+
+  // ───────────────────────────────────────────────────────────────
+  //  GLOBAL STYLE GUIDE  (PEP-8, with enforced extras)
+  // ───────────────────────────────────────────────────────────────
+  "styleGuide": {
+    "indent": 4,
+    "maxLineLength": 100,
+    "quoteStyle": "double",
+    "trailingCommas": "never",
+
+    "ordering": [
+      "imports",
+      "module_consts",
+      "dataclasses",
+      "globals",
+      "class_defs",
+      "functions",
+      "main_guard"
+    ],
+
+    "naming": {
+      "classes": "PascalCase",
+      "functions": "snake_case",
+      "variables": "snake_case",
+      "constants": "UPPER_SNAKE_CASE"
+    },
+
+    "docComments": {
+      "style": "google",
+      "requireReturnTag": true,
+      "requireParamTypes": true
+    }
+  },
+
+  // ───────────────────────────────────────────────────────────────
+  //  DIRECTORY LAYOUT
+  // ───────────────────────────────────────────────────────────────
+  "folders": {
+    "/hive":              "Runtime game code (Arcade render loop, entities).",
+    "/hive/ai":           "Optional heavy-duty AI models or wrappers.",
+    "/hive/net":          "Message-pack serialisation, UDP/TCP helpers.",
+    "/tests":             "Pytest unit + perf tests.",
+    "/assets":            "Static PNG/WAV sprites & sounds (minimal).",
+    "/docs":              "Design docs, phase roadmaps, perf budgets."
+  },
+
+  // ───────────────────────────────────────────────────────────────
+  //  MODULE DEFINITION
+  // ───────────────────────────────────────────────────────────────
+  "modules": [
+    {
+      "name": "blob",
+      "path": "/hive/blob.py",
+      "responsibility": [
+        "Tiny agent state (x, y, hunger, thirst, colour).",
+        "update(), draw() and network serialise()."
+      ]
+    },
+    {
+      "name": "world",
+      "path": "/hive/world.py",
+      "responsibility": [
+        "Grid resource map; FOOD/WATER enums.",
+        "spawn_resources(), tick_regen()."
+      ]
+    },
+    {
+      "name": "game_window",
+      "path": "/hive/game_window.py",
+      "responsibility": [
+        "Arcade.Window subclass.",
+        "Bridges blobs ↔ optional AI server via hive/net/io.py."
+      ]
+    },
+    {
+      "name": "ai_server",
+      "path": "/hive/ai/ai_server.py",
+      "responsibility": [
+        "Standalone process (run with `python -m hive.ai.ai_server`).",
+        "Receives packed world state, returns moves.",
+        "Stub brain now; upgrade to RL later."
+      ]
+    }
+  ],
+
+  // ───────────────────────────────────────────────────────────────
+  //  CODING RULES & PERFORMANCE BUDGETS
+  // ───────────────────────────────────────────────────────────────
+  "rules": [
+    // GENERAL
+    "All render-loop code (Arcade callbacks) must stay under 4 ms per frame @60 FPS on mid laptop.",
+    "No blocking I/O in on_update; network calls must be non-blocking or performed in a thread/async.",
+    "Avoid allocating new dict/list each frame inside critical loops; reuse or use object pools.",
+    "Blobs update in O(1). Path-finding beyond grid step must be opt-in and benchmarked.",
+    "msgpack payload per tick ≤ 32 KB; split into chunks if exceeded.",
+    "Public API surfaces require Google-style docstrings with param+return typing hints.",
+    "Unit test added for every new public function/class (pytest).",
+
+    // AUDIO
+    "Arcade sound playback limited to ≤ 8 concurrent effects.",
+    "Procedural chirp generation preferred over loading >50 WAV assets.",
+
+    // RESOURCES
+    "World must regenerate food/water to prevent extinction; regen tick configurable.",
+    "Resource grid stored as numpy uint8 array for speed & memory if > 1 M cells.",
+
+    // CI / LINT
+    "black, isort, and flake8 must pass; Cursor auto-format before commit.",
+    "pytest -q must exit 0; failing tests block Cursor bulk-writes."
+  ],
+
+  // ───────────────────────────────────────────────────────────────
+  //  TEST TEMPLATES
+  // ───────────────────────────────────────────────────────────────
+  "testTemplates": [
+    {
+      "name": "needs_decay",
+      "goal": "Blob dies when hunger ≥ 255.",
+      "path": "/tests/test_needs_decay.py"
+    },
+    {
+      "name": "memory_seek",
+      "goal": "Blob heads toward remembered food tile when hungry.",
+      "path": "/tests/test_memory_seek.py"
+    },
+    {
+      "name": "ai_roundtrip",
+      "goal": "Game ↔ ai_server UDP roundtrip under 5 ms.",
+      "path": "/tests/test_ai_roundtrip.py"
+    }
+  ],
+
+  // ───────────────────────────────────────────────────────────────
+  //  CURSOR EXAMPLES TO STEER AUTOCOMPLETE
+  // ───────────────────────────────────────────────────────────────
+  "examples": [
+    {
+      "ask": "Add resource regen every 30 s.",
+      "cursorShould": [
+        "Edit hive/world.py only.",
+        "Write unit test in tests/test_resource_regen.py.",
+        "Update /docs/phase_roadmap.md tick-rate section."
+      ]
+    },
+    {
+      "ask": "Implement chirp broadcast & lexicon store.",
+      "cursorShould": [
+        "Create hive/sound.py.",
+        "Extend blob.update() for chirp emit.",
+        "Add tests for lexicon convergence."
+      ]
+    }
+  ],
+
+  // ───────────────────────────────────────────────────────────────
+  //  FILE EXTENSIONS & DEFAULT LOCATION
+  // ───────────────────────────────────────────────────────────────
+  "defaultNewFilePath": "/hive",
+  "allowedFileExtensions": [".py", ".md", ".json", ".png", ".wav"]
+}
+}

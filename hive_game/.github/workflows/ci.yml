@@ -1,0 +1,45 @@
+name: HiveLife CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r hive_game/requirements.txt
+
+    - name: Lint with Black
+      run: |
+        black --check hive_game/
+
+    - name: Lint with Flake8
+      run: |
+        flake8 hive_game/
+
+    - name: Check types with MyPy
+      run: |
+        mypy hive_game/
+
+    - name: Run tests with Pytest
+      run: |
+        # Change directory so imports work correctly relative to the project root
+        cd hive_game
+        pytest 

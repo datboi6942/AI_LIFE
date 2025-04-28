@@ -13,6 +13,8 @@ from hive_game.hive import config
 from hive_game.hive.world import World, ResourceType
 from hive_game.hive import sound # Added sound import
 
+log = logging.getLogger(__name__) # Add logger instance
+
 if TYPE_CHECKING:
     from hive_game.hive.game_window import GameWindow # Import GameWindow for type hinting
 
@@ -27,6 +29,9 @@ class Blob:
     # Non-default fields first
     id: int
     game_window_ref: "GameWindow" = field(repr=False) # Reference to access global state
+
+    # Genome / Mutable Traits
+    wander_propensity: float = field(default=config.WANDER_RATE)
 
     # Default fields next
     x: int = 0
@@ -52,12 +57,17 @@ class Blob:
     food_mem_age: float = 0.0
     water_mem_age: float = 0.0
 
+    # --- Phase 2.5 Reproduction Cooldown ---
+    last_repro_tick: int = -int(config.REPRO_COOLDOWN_S * config.TICK_RATE_HZ) # Initialize ready
+
     # --- Phase 3 Communication & Learning ---
     lexicon: Dict[int, Dict[str, float]] = field(default_factory=dict)
     heard_chirps_pending_reinforcement: List[Tuple[int, str, int]] = field(default_factory=list)
     last_chirp_time: float = -1.0
     _chirp_cooldown: float = 0.5
     _reinforcement_delay_ticks: int = 180
+    last_emit_tick: int = 0 # Tick when the last chirp bubble should appear
+    last_emit_concept: Optional[str] = None # Concept associated with the last bubble
 
     # Internal derived rates (have defaults essentially)
     _hunger_rate_tick: float = config.HUNGER_RATE / config.TICK_RATE_HZ
@@ -65,8 +75,8 @@ class Blob:
     _energy_decay_tick: float = config.ENERGY_DECAY / config.TICK_RATE_HZ
 
     def _wander(self) -> None:
-        """Randomly changes direction based on WANDER_RATE."""
-        if random.random() < config.WANDER_RATE:
+        """Randomly changes direction based on wander_propensity."""
+        if random.random() < self.wander_propensity:
             self.vx = random.choice([-config.GRID_STEP, 0, config.GRID_STEP])
             self.vy = random.choice([-config.GRID_STEP, 0, config.GRID_STEP])
 
@@ -94,18 +104,30 @@ class Blob:
         # --- Memory Decay ---
         self._decay_mem(dt, world)
 
+        # --- Phase 2.5: Reproduction Logic ---
+        mate = None
+        if self.can_reproduce(current_tick):
+            mate = self.find_mate()
+            if mate and mate.can_reproduce(current_tick): # Check mate is also ready
+                self.reproduce_with(mate, current_tick)
+                # Mate also needs cooldown reset, handled in reproduce_with
+        # ------------------------------------
+
         # --- Update Needs ---
-        # Note: Needs update *after* decay, so memory reflects state *before* current tick need increase
-        self.hunger += self._hunger_rate_tick # Rate is per second, dt handles the fraction
+        self.hunger += self._hunger_rate_tick
         self.thirst += self._thirst_rate_tick
         self.energy -= self._energy_decay_tick
-        self.hunger = min(max(0, int(self.hunger)), config.BLOB_MAX_NEEDS)
-        self.thirst = min(max(0, int(self.thirst)), config.BLOB_MAX_NEEDS)
+
+        # Convert to int after potential fractional increases, ensure non-negative
+        self.hunger = max(0, int(self.hunger))
+        self.thirst = max(0, int(self.thirst))
         self.energy = max(0, int(self.energy))
 
         # --- Check for Death ---
+        # Needs can now exceed MAX_NEEDS, triggering death
         if self.hunger >= config.BLOB_MAX_NEEDS or self.thirst >= config.BLOB_MAX_NEEDS:
             self.alive = False
+            log.info(f"Blob {self.id} died. Hunger: {self.hunger}, Thirst: {self.thirst}") # Added log
             return # Stop processing if dead
 
         # --- Check for Resources at Current Location & Update Memory/Learning ---
@@ -113,12 +135,14 @@ class Blob:
         consumed_concept = None
         if current_tile_type == ResourceType.FOOD:
             self.hunger = max(0, self.hunger - config.FOOD_FILL)
+            self.energy = min(config.BLOB_MAX_NEEDS, self.energy + config.ENERGY_GAIN_ON_CONSUME) # Gain energy
             self.last_food_pos = (self.x, self.y) # Store current pos
             self.food_mem_age = 0.0 # Reset age
             world.consume_tile(self.x, self.y)
             consumed_concept = "food"
         elif current_tile_type == ResourceType.WATER:
             self.thirst = max(0, self.thirst - config.WATER_FILL)
+            self.energy = min(config.BLOB_MAX_NEEDS, self.energy + config.ENERGY_GAIN_ON_CONSUME) # Gain energy
             self.last_water_pos = (self.x, self.y) # Store current pos
             self.water_mem_age = 0.0 # Reset age
             world.consume_tile(self.x, self.y)
@@ -268,6 +292,10 @@ class Blob:
                 events.append(event)
                 sound.play_chirp(chirp_id, self.game_window_ref)
                 self.last_chirp_time = current_time
+                # --- Update state for visual feedback bubble ---
+                self.last_emit_tick = current_tick
+                self.last_emit_concept = concept
+                # -------------------------------------------------
                 logging.debug(f"Blob {self.id} broadcast chirp {chirp_id} for {concept} at ({self.x}, {self.y})")
             else:
                 logging.debug(f"Chirp volume limit reached, Blob {self.id} could not chirp.")
@@ -346,3 +374,116 @@ class Blob:
                 del self.lexicon[chirp_id]
 
     # --- End Phase 3 Methods ---
+
+    # --- Phase 2.5: Reproduction Methods --- 
+    def can_reproduce(self, current_tick: int) -> bool:
+        """Checks if this blob meets all conditions for reproduction."""
+        # Check basic state
+        if not self.alive:
+            return False
+        if self.hunger >= config.REPRO_HUNGER_THRESH:
+            return False
+        if self.thirst >= config.REPRO_THIRST_THRESH:
+            return False
+        if self.energy < config.REPRO_ENERGY_THRESH:
+            return False
+        
+        # Check cooldown
+        cooldown_s = config.REPRO_COOLDOWN_S
+        tick_rate = config.TICK_RATE_HZ
+        cooldown_ticks = int(cooldown_s * tick_rate) 
+        ticks_since_repro = current_tick - self.last_repro_tick
+        
+        log.debug(f"Blob {self.id} Cooldown Check: ticks_since_repro={ticks_since_repro}, cooldown_ticks={cooldown_ticks} (from {cooldown_s=}, {tick_rate=})")
+        
+        # Allow reproduction when ticks_since_repro >= cooldown_ticks
+        if ticks_since_repro < cooldown_ticks:
+            log.debug(f"Blob {self.id} cannot reproduce: cooldown not expired (need {cooldown_ticks - ticks_since_repro} more ticks)")
+            return False
+
+        # Check global population cap (via GameWindow reference)
+        current_pop = len(self.game_window_ref.blobs)
+        max_pop = config.MAX_BLOBS
+
+        log.debug(f"Blob {self.id} Pop Cap Check: current_pop={current_pop}, max_pop={max_pop}")
+        if current_pop >= max_pop:
+            log.debug(f"Blob {self.id} cannot reproduce: MAX_BLOBS reached ({current_pop} >= {max_pop})")
+            return False 
+
+        log.debug(f"Blob {self.id} can reproduce") 
+        return True
+
+    def find_mate(self) -> Optional[Blob]:
+        """Finds a nearby, eligible blob to reproduce with."""
+        nearby_potential_mates = self.game_window_ref.get_nearby_blobs(self, config.REPRO_NEARBY_RADIUS)
+        # Optional: Shuffle to avoid always picking the first one?
+        # random.shuffle(nearby_potential_mates)
+        for potential_mate in nearby_potential_mates:
+            # Check basic eligibility (no need to re-check cooldown/pop cap here, done by caller)
+            if (
+                potential_mate.alive and
+                potential_mate.hunger < config.REPRO_HUNGER_THRESH and
+                potential_mate.thirst < config.REPRO_THIRST_THRESH and
+                potential_mate.energy >= config.REPRO_ENERGY_THRESH
+                # Note: We rely on the *caller* to check the mate's cooldown *after* finding one.
+            ):
+                 log.debug(f"Blob {self.id} found potential mate {potential_mate.id}")
+                 return potential_mate
+        return None
+
+    def reproduce_with(self, mate: Blob, current_tick: int) -> None:
+        """Creates an offspring with the given mate."""
+        log.info(f"Blob {self.id} reproducing with Blob {mate.id} at tick {current_tick}")
+
+        # Deduct energy cost
+        self.energy -= config.REPRO_ENERGY_COST
+        mate.energy -= config.REPRO_ENERGY_COST
+
+        # Reset cooldown for both parents
+        self.last_repro_tick = current_tick
+        mate.last_repro_tick = current_tick
+
+        # --- Create Offspring --- 
+        offspring_id = self.game_window_ref.get_next_blob_id()
+        
+        # Position (midpoint)
+        offspring_x = (self.x + mate.x) // 2
+        offspring_y = (self.y + mate.y) // 2
+        offspring_x = (offspring_x // config.GRID_STEP) * config.GRID_STEP # Align to grid
+        offspring_y = (offspring_y // config.GRID_STEP) * config.GRID_STEP
+
+        # Inherit color (e.g., average or random choice? Let's average)
+        offspring_color = tuple(
+            (p1 + p2) // 2 for p1, p2 in zip(self.color, mate.color)
+        )
+
+        # Inherit and mutate traits (Wander Propensity example)
+        avg_wander = (self.wander_propensity + mate.wander_propensity) / 2.0
+        mutation_factor = 1.0 + random.uniform(-0.05, 0.05)
+        offspring_wander = max(0.01, avg_wander * mutation_factor) # Ensure not zero/negative
+
+        # TODO: Average/Mutate other traits like lexicon weights? Maybe later phase.
+        
+        # Initial state for offspring (e.g., neutral needs, starting energy)
+        initial_energy = 100 # Or could inherit some fraction?
+        initial_hunger = 0
+        initial_thirst = 0
+
+        offspring = Blob(
+            id=offspring_id,
+            game_window_ref=self.game_window_ref,
+            x=offspring_x,
+            y=offspring_y,
+            color=offspring_color,
+            wander_propensity=offspring_wander,
+            energy=initial_energy,
+            hunger=initial_hunger,
+            thirst=initial_thirst,
+            # Offspring inherits empty lexicon, no memory, ready cooldowns etc.
+            last_repro_tick = current_tick # Start cooldown immediately for offspring
+        )
+
+        # Add offspring to the simulation
+        self.game_window_ref.add_blob(offspring)
+
+    # --- End Phase 2.5 Methods ---

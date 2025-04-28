@@ -97,4 +97,16 @@ class World:
     def tile_is_empty(self, x: int, y: int) -> bool:
         """Checks if the tile at the coordinates is empty."""
         # Considers out-of-bounds implicitly empty via get_tile logic
-        return self.get_tile(x, y) == ResourceType.EMPTY 
+        return self.get_tile(x, y) == ResourceType.EMPTY
+
+    def tick_regen(self) -> None:
+        """Attempts to regenerate one food and one water tile at random empty spots."""
+        # Try to spawn one food
+        food_coord = self._get_random_empty_coord()
+        if food_coord:
+            self.tiles[food_coord] = ResourceType.FOOD
+
+        # Try to spawn one water
+        water_coord = self._get_random_empty_coord()
+        if water_coord:
+            self.tiles[water_coord] = ResourceType.WATER 

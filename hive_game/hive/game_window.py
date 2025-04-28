@@ -4,13 +4,15 @@ import random
 import logging
 from typing import List, Tuple, Any, Set, Optional
 import time
+import math
 
 import arcade
+# Explicitly import drawing functions used
+from arcade.draw import draw_lbwh_rectangle_filled
 
 from hive_game.hive import config
 from hive_game.hive.blob import Blob
 from hive_game.hive.world import World, ResourceType
-from hive_game.hive.sound import cleanup_temp_files
 from hive_game.hive import hive_mind
 
 log = logging.getLogger(__name__)
@@ -59,13 +61,22 @@ class GameWindow(arcade.Window):
         self._chirp_id_iterator = iter(self._chirp_id_pool)
         self.convergence_log: List[Tuple[int, float]] = []
 
+        # ID Counter - start after initial population
+        self.next_blob_id: int = 0
+
         for i in range(config.BLOB_COUNT):
             # Ensure blobs spawn within bounds and on the grid
             max_gx = self.world.grid_width - 1
             max_gy = self.world.grid_height - 1
             spawn_x = random.randint(0, max_gx) * config.GRID_STEP
             spawn_y = random.randint(0, max_gy) * config.GRID_STEP
-            self.blobs.append(Blob(id=i, x=spawn_x, y=spawn_y, game_window_ref=self))
+            # Use get_next_blob_id for initial population as well
+            blob_id = self.get_next_blob_id()
+            self.blobs.append(Blob(id=blob_id, x=spawn_x, y=spawn_y, game_window_ref=self))
+
+        # --- Visual Feedback State ---
+        self.debug_mode: bool = config.SHOW_DEBUG_DEFAULT
+        self._hovered_blob: Optional[Blob] = None # Track blob under mouse
 
         # --- HUD Initialization (only if not headless) ---
         if not headless:
@@ -88,6 +99,34 @@ class GameWindow(arcade.Window):
             self.fps_text = None
             self.blob_count_text = None
 
+    def get_next_blob_id(self) -> int:
+        """Returns the next available unique ID for a new blob."""
+        next_id = self.next_blob_id
+        self.next_blob_id += 1
+        return next_id
+
+    def add_blob(self, blob: Blob) -> None:
+        """Adds a new blob to the simulation."""
+        if len(self.blobs) < config.MAX_BLOBS:
+            self.blobs.append(blob)
+            log.debug(f"Added offspring blob {blob.id}, population now {len(self.blobs)}")
+        else:
+            log.debug(f"MAX_BLOBS reached ({config.MAX_BLOBS}), could not add offspring.")
+            # Handle the case where offspring cannot be added (optional: log, ignore)
+            # Currently, the blob object created by the parent will just be discarded.
+
+    def get_nearby_blobs(self, center_blob: Blob, radius: float) -> List[Blob]:
+        """Finds blobs (excluding self) within a given radius."""
+        nearby = []
+        for other_blob in self.blobs:
+            if other_blob.id == center_blob.id or not other_blob.alive:
+                continue # Skip self and dead blobs
+            
+            distance = math.hypot(center_blob.x - other_blob.x, center_blob.y - other_blob.y)
+            if distance <= radius:
+                nearby.append(other_blob)
+        return nearby
+
     def get_new_chirp_id(self) -> Optional[int]:
         """Gets the next available unique chirp ID from the shuffled pool."""
         try:
@@ -100,6 +139,38 @@ class GameWindow(arcade.Window):
         except StopIteration:
             log.error("Ran out of unique chirp IDs in the initial pool!")
             return None
+
+    def on_key_press(self, key, modifiers):
+        """Handle keyboard events."""
+        if key == arcade.key.F2:
+            self.debug_mode = not self.debug_mode
+            log.info(f"Debug mode {'enabled' if self.debug_mode else 'disabled'}")
+        # Add other key handlers here if needed
+
+    def on_mouse_motion(self, x, y, dx, dy):
+        """Update hovered blob when mouse moves (only if debug mode is on)."""
+        if self.debug_mode:
+            self._hovered_blob = self._find_blob_at(x, y)
+
+    def _find_blob_at(self, x: int, y: int) -> Optional[Blob]:
+        """Finds the topmost blob whose bounding box contains the coordinates."""
+        closest_blob = None
+        min_dist_sq = float('inf')
+
+        for blob in reversed(self.blobs): # Check topmost first
+            if not blob.alive:
+                continue
+            # Simple bounding box check
+            blob_right = blob.x + config.BLOB_SIZE
+            blob_top = blob.y + config.BLOB_SIZE
+            if blob.x <= x < blob_right and blob.y <= y < blob_top:
+                # Optional: Use distance if point is inside multiple overlapping blobs
+                # dist_sq = (blob.x + config.BLOB_SIZE/2 - x)**2 + (blob.y + config.BLOB_SIZE/2 - y)**2
+                # if dist_sq < min_dist_sq:
+                #     min_dist_sq = dist_sq
+                #     closest_blob = blob
+                return blob # Return the first one found (topmost)
+        return None
 
     def on_update(self, delta_time: float) -> None:
         """Game logic and movement updates.
@@ -115,6 +186,14 @@ class GameWindow(arcade.Window):
             if blob.alive:
                 blob.update(self.world, delta_time, self.current_tick, self.events)
                 live_blobs += 1
+
+        # Filter out dead blobs
+        self.blobs = [blob for blob in self.blobs if blob.alive]
+
+        # --- Regenerate World Resources ---
+        regen_interval_ticks = int(config.RESOURCE_REGEN_INTERVAL_S * config.TICK_RATE_HZ)
+        if regen_interval_ticks > 0 and self.current_tick % regen_interval_ticks == 0:
+            self.world.tick_regen() # Assuming this method exists
 
         # Restore convergence logic
         convergence_result = hive_mind.update_convergence(
@@ -147,6 +226,14 @@ class GameWindow(arcade.Window):
                 blob.update(self.world, delta_time, self.current_tick, self.events)
                 live_blobs += 1
 
+        # Filter out dead blobs
+        self.blobs = [blob for blob in self.blobs if blob.alive]
+
+        # --- Regenerate World Resources ---
+        regen_interval_ticks = int(config.RESOURCE_REGEN_INTERVAL_S * config.TICK_RATE_HZ)
+        if regen_interval_ticks > 0 and self.current_tick % regen_interval_ticks == 0:
+            self.world.tick_regen() # Assuming this method exists
+
         # Restore convergence logic (no logging needed in benchmark mode)
         _ = hive_mind.update_convergence(
             [b for b in self.blobs if b.alive],
@@ -162,7 +249,7 @@ class GameWindow(arcade.Window):
 
         self.clear()
 
-        # --- Draw resources (individual draw calls) --- 
+        # --- Draw resources (individual draw calls) ---
         resource_width = config.BLOB_SIZE
         resource_height = config.BLOB_SIZE
         food_color = arcade.color.APPLE_GREEN
@@ -199,17 +286,114 @@ class GameWindow(arcade.Window):
         for blob in self.blobs:
             blob.draw()
 
+        # --- Draw Action Bubbles ---
+        for blob in self.blobs:
+            if blob.alive and blob.last_emit_concept is not None:
+                ticks_since_emit = self.current_tick - blob.last_emit_tick
+                if ticks_since_emit <= config.BUBBLE_DURATION_TICKS:
+                    self._draw_bubble(blob)
+
+        # --- Draw Debug Panel (if active and blob hovered) ---
+        if self.debug_mode and self._hovered_blob:
+            self._draw_debug_panel(self._hovered_blob)
+
         # Draw HUD
         if not self._headless:
             if self.fps_text:
                 self.fps_text.draw()
             if self.blob_count_text:
-                self.blob_count_text.draw() 
+                self.blob_count_text.draw()
+
+    def _draw_bubble(self, blob: Blob) -> None:
+        """Draws a small indicator bubble above the blob."""
+        bubble_size = 10
+        bubble_x = blob.x + config.BLOB_SIZE / 2 # Center horizontally
+        bubble_y = blob.y + config.BLOB_SIZE + config.BUBBLE_OFFSET_PX # Position above
+
+        # Icon based on concept
+        icon_color = arcade.color.DARK_GRAY # Default if concept unknown
+        if blob.last_emit_concept == "food":
+            icon_color = arcade.color.APPLE_GREEN
+        elif blob.last_emit_concept == "water":
+            icon_color = arcade.color.BLUE_SAPPHIRE
+
+        # Calculate L, B from Center X, Y for draw_lbwh
+        rect_width = bubble_size * 0.8
+        rect_height = bubble_size * 0.8
+        center_x = bubble_x
+        center_y = bubble_y + bubble_size / 2
+        left = center_x - rect_width / 2
+        bottom = center_y - rect_height / 2
+
+        draw_lbwh_rectangle_filled(left, bottom, # Use calculated L, B
+                                          rect_width, rect_height, # Slightly smaller icon
+                                          icon_color)
+
+    def _draw_debug_panel(self, blob: Blob) -> None:
+        """Draws the debug information panel for the hovered blob."""
+        panel_x = 10
+        panel_y = config.WINDOW_HEIGHT - 70 # Position below existing HUD
+        panel_width = 200
+        panel_height = 100
+        bg_color = arcade.make_transparent_color(arcade.color.BLACK, alpha=180)
+        text_color = arcade.color.WHITE_SMOKE
+        font_size = 9
+        line_height = 12
+
+        # Draw background
+        # Calculate L, B from Center X, Y for draw_lbwh
+        center_x = panel_x + panel_width / 2
+        center_y = panel_y - panel_height / 2
+        left = center_x - panel_width / 2
+        bottom = center_y - panel_height / 2
+
+        draw_lbwh_rectangle_filled(left, bottom, # Use calculated L, B
+                                          panel_width, panel_height, bg_color)
+
+        # Prepare text lines
+        lines = [
+            f"ID: {blob.id}",
+            f"Hunger: {blob.hunger} / {config.BLOB_MAX_NEEDS}",
+            f"Thirst: {blob.thirst} / {config.BLOB_MAX_NEEDS}",
+            f"Energy: {blob.energy}",
+        ]
+
+        # Target
+        target = blob._decide_target()
+        target_str = "Wandering"
+        if target:
+            target_type = "UNKNOWN"
+            if blob.last_food_pos == target:
+                target_type = "FOOD"
+            elif blob.last_water_pos == target:
+                target_type = "WATER"
+            target_str = f"Target: {target_type} ({target[0]},{target[1]})"
+        lines.append(target_str)
+
+        # Lexicon (Top 3)
+        lex_str = "Lexicon: "
+        if blob.lexicon:
+            # Sort lexicon items by weight descending for each concept
+            sorted_lex = []
+            for chirp_id, concepts in blob.lexicon.items():
+                for concept, weight in concepts.items():
+                    sorted_lex.append((weight, chirp_id, concept))
+            
+            sorted_lex.sort(reverse=True)
+            lex_items = [f"{cid}▶{con}({w:.2f})" for w, cid, con in sorted_lex[:3]]
+            lex_str += "  ".join(lex_items)
+        else:
+            lex_str += "(Empty)"
+        lines.append(lex_str)
+
+        # Draw text lines
+        start_y = panel_y - line_height
+        for i, line in enumerate(lines):
+            arcade.draw_text(line, panel_x + 5, start_y - i * line_height, # Call using arcade.* namespace
+                                text_color, font_size=font_size)
 
     def on_close(self) -> None:
         """Called when the window is being closed."""
-        # Clean up temporary sound files
-        cleanup_temp_files()
         # Save convergence data if needed
         if self.convergence_log:
              log.info(f"Saving convergence log with {len(self.convergence_log)} entries.")

@@ -10,7 +10,7 @@ import struct
 import io
 import os
 import tempfile
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, Optional, TYPE_CHECKING, Union
 
 import arcade
 import pyglet # For StaticSource
@@ -22,9 +22,6 @@ log = logging.getLogger(__name__)
 
 # Cache for generated arcade.Sound objects, keyed by chirp ID (int)
 sound_cache: Dict[int, arcade.Sound] = {}
-
-# Cache for temporary file paths
-temp_file_cache: Dict[int, str] = {}
 
 SAMPLE_RATE = 8000 # Hz
 BITS_PER_SAMPLE = 8
@@ -86,9 +83,17 @@ def _build_wav_bytes(pcm_data: array.array, sample_rate: int) -> bytes:
     )
     return header + pcm_data.tobytes()
 
-def get_or_generate_sound(chirp_id: int) -> Optional[arcade.Sound]:
-    """Gets a cached sound or generates it procedurally based on the chirp ID."""
-    if chirp_id in sound_cache:
+def get_or_generate_sound(chirp_id: int, return_bytes: bool = False) -> Union[Optional[arcade.Sound], bytes]:
+    """Gets a cached sound or generates it procedurally based on the chirp ID.
+    
+    Args:
+        chirp_id: The ID of the chirp to generate
+        return_bytes: If True, returns the raw WAV bytes instead of loading a sound
+        
+    Returns:
+        Either an arcade.Sound object or raw WAV bytes if return_bytes is True
+    """
+    if not return_bytes and chirp_id in sound_cache:
         return sound_cache[chirp_id]
 
     log.debug(f"Generating sound for chirp ID {chirp_id}")
@@ -107,42 +112,30 @@ def get_or_generate_sound(chirp_id: int) -> Optional[arcade.Sound]:
 
     # 3. Pack into WAV bytes
     wav_bytes = _build_wav_bytes(pcm_data, SAMPLE_RATE)
+    
+    if return_bytes:
+        return wav_bytes
 
-    # 4. Save to a temporary file and load it as a sound
+    # 4. Save to temporary file and load it as a sound
     try:
-        # Create a temporary file with .wav extension
-        temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-        temp_file_path = temp_file.name
-        temp_file.write(wav_bytes)
-        temp_file.close()
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_file.write(wav_bytes)
+            temp_path = temp_file.name
         
-        # Cache the temp file path for cleanup later
-        temp_file_cache[chirp_id] = temp_file_path
-        
-        # Load the sound from the temporary file
-        sound = arcade.load_sound(temp_file_path)
+        sound = arcade.load_sound(temp_path)
         sound_cache[chirp_id] = sound
+        
+        # Clean up the temporary file
+        try:
+            os.unlink(temp_path)
+        except Exception as e:
+            log.warning(f"Failed to delete temporary WAV file {temp_path}: {e}")
+            
         log.debug(f"Generated and cached sound for chirp ID {chirp_id}")
         return sound
     except Exception as e:
         log.error(f"Error loading generated WAV for chirp ID {chirp_id}: {e}")
-        # Clean up the temp file if it was created
-        if chirp_id in temp_file_cache:
-            try:
-                os.unlink(temp_file_cache[chirp_id])
-                del temp_file_cache[chirp_id]
-            except:
-                pass
         return None
-
-def cleanup_temp_files() -> None:
-    """Clean up temporary WAV files when shutting down."""
-    for temp_file_path in temp_file_cache.values():
-        try:
-            os.unlink(temp_file_path)
-        except:
-            pass
-    temp_file_cache.clear()
 
 def play_chirp(chirp_id: int, game_window: GameWindow) -> None:
     """Plays the procedurally generated sound for the given chirp ID."""

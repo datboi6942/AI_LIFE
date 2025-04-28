@@ -61,22 +61,11 @@ def test_sound_generation_is_deterministic(mock_arcade_load_sound):
     chirp_id = 88 # Use a different ID
 
     # Generate first time
-    sound.get_or_generate_sound(chirp_id)
-    assert mock_load.call_count == 1
-    # Extract the BytesIO object passed to load_sound
-    args1, kwargs1 = mock_load.call_args
-    wav_stream1 = args1[0]
-    wav_bytes1 = wav_stream1.getvalue()
+    wav_bytes1 = sound.get_or_generate_sound(chirp_id, return_bytes=True)
     hash1 = hashlib.sha256(wav_bytes1).hexdigest()
 
-    # Clear cache and generate second time
-    sound.sound_cache.clear()
-    mock_load.reset_mock()
-    sound.get_or_generate_sound(chirp_id)
-    assert mock_load.call_count == 1
-    args2, kwargs2 = mock_load.call_args
-    wav_stream2 = args2[0]
-    wav_bytes2 = wav_stream2.getvalue()
+    # Generate second time
+    wav_bytes2 = sound.get_or_generate_sound(chirp_id, return_bytes=True)
     hash2 = hashlib.sha256(wav_bytes2).hexdigest()
 
     # Assert WAV bytes are identical
@@ -91,22 +80,15 @@ def test_waveform_type_alternates(mock_arcade_load_sound):
 
     # Even ID (expect square wave characteristics)
     chirp_id_even = 100
-    sound.get_or_generate_sound(chirp_id_even)
-    args_even, _ = mock_load.call_args
-    wav_bytes_even = args_even[0].getvalue()
+    wav_bytes_even = sound.get_or_generate_sound(chirp_id_even, return_bytes=True)
     # Simple check: square wave likely has long runs of 0x00 and 0xFF
     data_bytes_even = wav_bytes_even[44:] # Skip header
     assert b'\xff\xff\xff' in data_bytes_even or b'\x00\x00\x00' in data_bytes_even, \
         f"Even ID {chirp_id_even} did not seem to produce square wave bytes"
 
-    sound.sound_cache.clear()
-    mock_load.reset_mock()
-
     # Odd ID (expect sine wave characteristics)
     chirp_id_odd = 101
-    sound.get_or_generate_sound(chirp_id_odd)
-    args_odd, _ = mock_load.call_args
-    wav_bytes_odd = args_odd[0].getvalue()
+    wav_bytes_odd = sound.get_or_generate_sound(chirp_id_odd, return_bytes=True)
     data_bytes_odd = wav_bytes_odd[44:]
     # Sine wave should vary more smoothly, less likely to have long runs of max/min
     # Check if it contains values other than 0 and 255 frequently

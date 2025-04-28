@@ -1,19 +1,13 @@
 from __future__ import annotations
 
 import random
-import enum
 from typing import Dict, Tuple, TYPE_CHECKING
 
 from hive_game.hive import config
+from hive_game.hive.resource_type import ResourceType
 
 if TYPE_CHECKING:
     from hive_game.hive.blob import Blob # Avoid circular import
-
-class ResourceType(enum.IntEnum):
-    """Enum for tile types."""
-    EMPTY = 0
-    FOOD = 1
-    WATER = 2
 
 # Type alias for coordinates
 Coord = Tuple[int, int]

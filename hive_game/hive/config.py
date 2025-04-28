@@ -32,7 +32,13 @@ GRID_STEP: int = 2  # Reduced from BLOB_SIZE (8) to 2 for smoother movement
 WANDER_RATE: float = 0.15  # Probability of changing direction each tick
 
 # --- Phase 2 tunables -------------------------------------------------
-HUNGER_SEEK: int   = 200    # start path-seeking if hunger >= X
-THIRST_SEEK: int   = 200
-MEMORY_SPAN_S: float = 60.0     # seconds before a memory entry expires
-SEEK_SPEED: int    = GRID_STEP  # px per tick (ensure it's same as grid step for Phase 2) 
+HUNGER_SEEK: int   = 200    # Start path-seeking if hunger >= X (out of BLOB_MAX_NEEDS)
+THIRST_SEEK: int   = 200    # Start path-seeking if thirst >= X (out of BLOB_MAX_NEEDS)
+MEMORY_SPAN_S: float = 60.0 # Seconds before a remembered food/water location expires.
+SEEK_SPEED: int    = GRID_STEP  # Pixels per tick moved towards target (matched to grid step).
+
+# --- Phase 3 tunables -------------------------------------------------
+CHIRP_RADIUS: int = 32         # Hearing distance in pixels.
+CHIRP_VOLUME: int = 20         # Max concurrent chirps allowed per frame (rate-limit on emission).
+LEXICON_DECAY: float = 0.01    # Fraction weight loss per second without reinforcement.
+CONVERGENCE_INTERVAL: int = 5_000 # How often (ticks) to compute global similarity. 

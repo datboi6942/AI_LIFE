@@ -28,7 +28,8 @@ INITIAL_FOOD_COUNT: int = 40
 INITIAL_WATER_COUNT: int = 40
 
 # Movement
-GRID_STEP: int = BLOB_SIZE # Move one blob size at a time 
+GRID_STEP: int = 2  # Reduced from BLOB_SIZE (8) to 2 for smoother movement
+WANDER_RATE: float = 0.15  # Probability of changing direction each tick
 
 # --- Phase 2 tunables -------------------------------------------------
 HUNGER_SEEK: int   = 200    # start path-seeking if hunger >= X

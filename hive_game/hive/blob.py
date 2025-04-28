@@ -21,6 +21,8 @@ class Blob:
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     x: int = 0
     y: int = 0
+    vx: int = 0  # Added velocity components
+    vy: int = 0
     color: tuple[int, int, int] = field(default_factory=lambda: random.choice([
         arcade.color.RED,
         arcade.color.BLUE,
@@ -43,6 +45,12 @@ class Blob:
     _hunger_rate_tick: float = config.HUNGER_RATE / config.TICK_RATE_HZ
     _thirst_rate_tick: float = config.THIRST_RATE / config.TICK_RATE_HZ
     _energy_decay_tick: float = config.ENERGY_DECAY / config.TICK_RATE_HZ
+
+    def _wander(self) -> None:
+        """Randomly changes direction based on WANDER_RATE."""
+        if random.random() < config.WANDER_RATE:
+            self.vx = random.choice([-config.GRID_STEP, 0, config.GRID_STEP])
+            self.vy = random.choice([-config.GRID_STEP, 0, config.GRID_STEP])
 
     def update(self, world: World, dt: float) -> None:
         """Updates the blob's state for one tick.
@@ -85,7 +93,33 @@ class Blob:
             world.consume_tile(self.x, self.y)
 
         # --- Movement (Seeking or Wandering) ---
-        self._move(world)
+        target = self._decide_target()
+        if target:
+            # Seek target
+            target_x, target_y = target
+            # Calculate direction vector components
+            delta_x = target_x - self.x
+            delta_y = target_y - self.y
+
+            # Set velocity based on direction to target
+            self.vx = _clamp(delta_x, -config.SEEK_SPEED, config.SEEK_SPEED)
+            self.vy = _clamp(delta_y, -config.SEEK_SPEED, config.SEEK_SPEED)
+        else:
+            # Wander randomly
+            self._wander()
+
+        # Apply movement
+        self.x += self.vx
+        self.y += self.vy
+
+        # Clamp to boundaries
+        self.x = _clamp(self.x, 0, world.width - config.BLOB_SIZE)
+        self.y = _clamp(self.y, 0, world.height - config.BLOB_SIZE)
+
+        # Ensure movement aligns to grid if wandering or seeking
+        # (Seeking speed is set to grid step for phase 2)
+        self.x = (self.x // config.GRID_STEP) * config.GRID_STEP
+        self.y = (self.y // config.GRID_STEP) * config.GRID_STEP
 
     def _decay_mem(self, dt: float, world: World) -> None:
         """Decays memory age and invalidates memories if too old or tile is empty."""
@@ -120,63 +154,31 @@ class Blob:
         else:
             return None # No urgent need or no memory
 
-    def _move(self, world: World) -> None:
-        """Moves the blob towards a target if seeking, otherwise wanders randomly."""
-        target = self._decide_target()
-        dx = 0
-        dy = 0
-
-        if target:
-            # Seek target
-            target_x, target_y = target
-            # Calculate direction vector components
-            delta_x = target_x - self.x
-            delta_y = target_y - self.y
-
-            # Simple axis-aligned movement towards target
-            if delta_x > 0:
-                dx = config.SEEK_SPEED
-            elif delta_x < 0:
-                dx = -config.SEEK_SPEED
-
-            if delta_y > 0:
-                dy = config.SEEK_SPEED
-            elif delta_y < 0:
-                dy = -config.SEEK_SPEED
-            
-            # Avoid getting stuck oscillating over the target if speed > 1
-            # If the step would overshoot, just step onto the target coord
-            if abs(delta_x) < config.SEEK_SPEED:
-                dx = delta_x
-            if abs(delta_y) < config.SEEK_SPEED:
-                dy = delta_y
-
-        else:
-            # Wander randomly
-            dx = random.choice([-config.GRID_STEP, 0, config.GRID_STEP])
-            dy = random.choice([-config.GRID_STEP, 0, config.GRID_STEP])
-
-        # Apply movement and clamp to boundaries
-        new_x = _clamp(self.x + dx, 0, world.width - config.BLOB_SIZE)
-        new_y = _clamp(self.y + dy, 0, world.height - config.BLOB_SIZE)
-
-        # Ensure movement aligns to grid if wandering or seeking
-        # (Seeking speed is set to grid step for phase 2)
-        self.x = (new_x // config.GRID_STEP) * config.GRID_STEP
-        self.y = (new_y // config.GRID_STEP) * config.GRID_STEP
-
     def draw(self) -> None:
-        """Draws the blob as a simple rectangle."""
-        if self.alive:
-            # Calculate left and bottom from center
-            center_x = self.x + config.BLOB_SIZE / 2
-            center_y = self.y + config.BLOB_SIZE / 2
-            left = center_x - config.BLOB_SIZE / 2
-            bottom = center_y - config.BLOB_SIZE / 2
-            arcade.draw.draw_lbwh_rectangle_filled( # Use lbwh
-                left,
-                bottom,
-                config.BLOB_SIZE,
-                config.BLOB_SIZE,
-                self.color
-            )
+        """Draws the blob as a rounded rectangle."""
+        if not self.alive:
+            return
+            
+        # Draw the main body
+        arcade.draw.draw_arc_filled(
+            self.x + config.BLOB_SIZE/2,  # center x
+            self.y + config.BLOB_SIZE/2,  # center y
+            config.BLOB_SIZE,  # width
+            config.BLOB_SIZE,  # height
+            self.color,
+            0, 360,  # start and end angles
+            8  # number of segments
+        )
+        
+        # Draw a slightly darker outline
+        darker_color = tuple(max(0, c - 40) for c in self.color)
+        arcade.draw.draw_arc_outline(
+            self.x + config.BLOB_SIZE/2,  # center x
+            self.y + config.BLOB_SIZE/2,  # center y
+            config.BLOB_SIZE,  # width
+            config.BLOB_SIZE,  # height
+            darker_color,
+            0, 360,  # start and end angles
+            8,  # number of segments
+            2  # line width
+        )

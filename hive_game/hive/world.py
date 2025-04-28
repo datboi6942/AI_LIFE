@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import random
 import enum
-from typing import Dict, Tuple
+from typing import Dict, Tuple, TYPE_CHECKING
 
 from hive_game.hive import config
+
+if TYPE_CHECKING:
+    from hive_game.hive.blob import Blob # Avoid circular import
 
 class ResourceType(enum.IntEnum):
     """Enum for tile types."""
@@ -87,4 +90,17 @@ class World:
         gy = (y // config.GRID_STEP) * config.GRID_STEP
         coord = (gx, gy)
         if coord in self.tiles:
-            del self.tiles[coord] 
+            del self.tiles[coord]
+
+    def tile_is_food(self, x: int, y: int) -> bool:
+        """Checks if the tile at the coordinates contains food."""
+        return self.get_tile(x, y) == ResourceType.FOOD
+
+    def tile_is_water(self, x: int, y: int) -> bool:
+        """Checks if the tile at the coordinates contains water."""
+        return self.get_tile(x, y) == ResourceType.WATER
+
+    def tile_is_empty(self, x: int, y: int) -> bool:
+        """Checks if the tile at the coordinates is empty."""
+        # Considers out-of-bounds implicitly empty via get_tile logic
+        return self.get_tile(x, y) == ResourceType.EMPTY 

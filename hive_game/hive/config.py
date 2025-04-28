@@ -29,3 +29,9 @@ INITIAL_WATER_COUNT: int = 40
 
 # Movement
 GRID_STEP: int = BLOB_SIZE # Move one blob size at a time 
+
+# --- Phase 2 tunables -------------------------------------------------
+HUNGER_SEEK: int   = 200    # start path-seeking if hunger >= X
+THIRST_SEEK: int   = 200
+MEMORY_SPAN_S: float = 60.0     # seconds before a memory entry expires
+SEEK_SPEED: int    = GRID_STEP  # px per tick (ensure it's same as grid step for Phase 2) 

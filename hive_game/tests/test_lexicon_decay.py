@@ -25,7 +25,7 @@ def test_world() -> World:
 
 @pytest.fixture
 def test_blob(mock_game_window: GameWindow) -> Blob:
-    blob = Blob(id=1, x=10, y=10, game_window_ref=mock_game_window)
+    blob = Blob(id=1, x=10, y=10, game_window_ref=mock_game_window, energy=1_000_000)
     # Initialize lexicon with some weights
     blob.lexicon = {
         10: {"food": 0.8, "water": 0.1},

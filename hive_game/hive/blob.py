@@ -48,8 +48,9 @@ class Blob:
     ]))
     hunger: int = 0
     thirst: int = 0
-    energy: int = 100
+    energy: int = 150
     alive: bool = True
+    age_ticks: int = 0 # New: Track age in ticks
 
     # --- Phase 2 Memory ---
     last_food_pos: Optional[Tuple[int, int]] = None
@@ -69,10 +70,15 @@ class Blob:
     last_emit_tick: int = 0 # Tick when the last chirp bubble should appear
     last_emit_concept: Optional[str] = None # Concept associated with the last bubble
 
+    # --- Phase 3.5 Exhaustion Tracking ---
+    _ticks_at_zero_energy: int = 0 # New: Track how long energy has been <= 0
+
     # Internal derived rates (have defaults essentially)
     _hunger_rate_tick: float = config.HUNGER_RATE / config.TICK_RATE_HZ
     _thirst_rate_tick: float = config.THIRST_RATE / config.TICK_RATE_HZ
     _energy_decay_tick: float = config.ENERGY_DECAY / config.TICK_RATE_HZ
+    _max_lifespan_ticks: int = int(config.MAX_LIFESPAN_S * config.TICK_RATE_HZ) # New: Precompute max lifespan in ticks
+    _exhaustion_grace_ticks: int = int(config.EXHAUSTION_GRACE * config.TICK_RATE_HZ) # New: Precompute grace period in ticks
 
     def _wander(self) -> None:
         """Randomly changes direction based on wander_propensity."""
@@ -91,6 +97,9 @@ class Blob:
         """
         if not self.alive:
             return
+
+        # --- Increment Age ---
+        self.age_ticks += 1
 
         # --- Phase 3: Process Heard Chirps (from previous frame's events) ---
         self._process_heard_chirps(events, current_tick)
@@ -125,24 +134,43 @@ class Blob:
 
         # --- Check for Death ---
         # Needs can now exceed MAX_NEEDS, triggering death
-        if self.hunger >= config.BLOB_MAX_NEEDS or self.thirst >= config.BLOB_MAX_NEEDS:
-            self.alive = False
-            log.info(f"Blob {self.id} died. Hunger: {self.hunger}, Thirst: {self.thirst}") # Added log
+        if self.hunger >= config.BLOB_MAX_NEEDS:
+            self._die("starvation")
+            return # Stop processing if dead
+        if self.thirst >= config.BLOB_MAX_NEEDS:
+            self._die("dehydration")
+            return # Stop processing if dead
+
+        # --- Check for Exhaustion Death ---
+        if self.energy <= 0:
+            self._ticks_at_zero_energy += 1
+            if self._ticks_at_zero_energy >= self._exhaustion_grace_ticks:
+                self._die("exhaustion")
+                return # Stop processing if dead
+        else:
+            self._ticks_at_zero_energy = 0 # Reset grace counter if energy recovers
+
+        # --- Check for Old Age Death ---
+        if self.age_ticks >= self._max_lifespan_ticks:
+            self._die("old_age")
             return # Stop processing if dead
 
         # --- Check for Resources at Current Location & Update Memory/Learning ---
         current_tile_type = world.get_tile(self.x, self.y)
+        log.debug(f"Blob {self.id} at ({self.x},{self.y}). Tile type: {current_tile_type}. Needs: H={self.hunger}, T={self.thirst}, E={self.energy}") # Add pre-consumption log
         consumed_concept = None
         if current_tile_type == ResourceType.FOOD:
+            log.info(f"Blob {self.id} consuming FOOD at ({self.x}, {self.y})") # Add consumption log
             self.hunger = max(0, self.hunger - config.FOOD_FILL)
-            self.energy = min(config.BLOB_MAX_NEEDS, self.energy + config.ENERGY_GAIN_ON_CONSUME) # Gain energy
+            self.energy = min(config.ENERGY_MAX, self.energy + config.ENERGY_REGEN_PER_FOOD) # Gain energy based on food
             self.last_food_pos = (self.x, self.y) # Store current pos
             self.food_mem_age = 0.0 # Reset age
             world.consume_tile(self.x, self.y)
             consumed_concept = "food"
         elif current_tile_type == ResourceType.WATER:
+            log.info(f"Blob {self.id} consuming WATER at ({self.x}, {self.y})") # Add consumption log
             self.thirst = max(0, self.thirst - config.WATER_FILL)
-            self.energy = min(config.BLOB_MAX_NEEDS, self.energy + config.ENERGY_GAIN_ON_CONSUME) # Gain energy
+            self.energy = min(config.ENERGY_MAX, self.energy + config.ENERGY_REGEN_PER_WATER) # Gain energy based on water
             self.last_water_pos = (self.x, self.y) # Store current pos
             self.water_mem_age = 0.0 # Reset age
             world.consume_tile(self.x, self.y)
@@ -382,10 +410,13 @@ class Blob:
         if not self.alive:
             return False
         if self.hunger >= config.REPRO_HUNGER_THRESH:
+            log.debug(f"Blob {self.id} cannot reproduce: too hungry ({self.hunger} >= {config.REPRO_HUNGER_THRESH})")
             return False
         if self.thirst >= config.REPRO_THIRST_THRESH:
+            log.debug(f"Blob {self.id} cannot reproduce: too thirsty ({self.thirst} >= {config.REPRO_THIRST_THRESH})")
             return False
         if self.energy < config.REPRO_ENERGY_THRESH:
+            log.debug(f"Blob {self.id} cannot reproduce: energy too low ({self.energy} < {config.REPRO_ENERGY_THRESH})")
             return False
         
         # Check cooldown
@@ -410,25 +441,26 @@ class Blob:
             log.debug(f"Blob {self.id} cannot reproduce: MAX_BLOBS reached ({current_pop} >= {max_pop})")
             return False 
 
-        log.debug(f"Blob {self.id} can reproduce") 
+        log.debug(f"Blob {self.id} can reproduce (Energy: {self.energy}, Hunger: {self.hunger}, Thirst: {self.thirst})")
         return True
 
     def find_mate(self) -> Optional[Blob]:
         """Finds a nearby, eligible blob to reproduce with."""
         nearby_potential_mates = self.game_window_ref.get_nearby_blobs(self, config.REPRO_NEARBY_RADIUS)
-        # Optional: Shuffle to avoid always picking the first one?
-        # random.shuffle(nearby_potential_mates)
-        for potential_mate in nearby_potential_mates:
-            # Check basic eligibility (no need to re-check cooldown/pop cap here, done by caller)
-            if (
-                potential_mate.alive and
-                potential_mate.hunger < config.REPRO_HUNGER_THRESH and
-                potential_mate.thirst < config.REPRO_THIRST_THRESH and
-                potential_mate.energy >= config.REPRO_ENERGY_THRESH
-                # Note: We rely on the *caller* to check the mate's cooldown *after* finding one.
-            ):
-                 log.debug(f"Blob {self.id} found potential mate {potential_mate.id}")
-                 return potential_mate
+        
+        # Filter for eligible mates
+        eligible_mates = [
+            mate for mate in nearby_potential_mates
+            if mate.id != self.id  # Can't mate with self
+            and mate.alive
+            and mate.hunger < config.REPRO_HUNGER_THRESH
+            and mate.thirst < config.REPRO_THIRST_THRESH
+            and mate.energy >= config.REPRO_ENERGY_THRESH
+        ]
+        
+        if eligible_mates:
+            # Pick a random eligible mate
+            return random.choice(eligible_mates)
         return None
 
     def reproduce_with(self, mate: Blob, current_tick: int) -> None:
@@ -462,10 +494,8 @@ class Blob:
         mutation_factor = 1.0 + random.uniform(-0.05, 0.05)
         offspring_wander = max(0.01, avg_wander * mutation_factor) # Ensure not zero/negative
 
-        # TODO: Average/Mutate other traits like lexicon weights? Maybe later phase.
-        
-        # Initial state for offspring (e.g., neutral needs, starting energy)
-        initial_energy = 100 # Or could inherit some fraction?
+        # Initial state for offspring - start with higher energy to help survival
+        initial_energy = 200  # Start with enough energy to reproduce
         initial_hunger = 0
         initial_thirst = 0
 
@@ -483,7 +513,30 @@ class Blob:
             last_repro_tick = current_tick # Start cooldown immediately for offspring
         )
 
+        # Log birth event
+        log.info(f"Reproduction: Blob {self.id} ({self.energy=}) + Blob {mate.id} ({mate.energy=}) -> Offspring {offspring_id}")
+
         # Add offspring to the simulation
         self.game_window_ref.add_blob(offspring)
 
     # --- End Phase 2.5 Methods ---
+
+    def _die(self, reason: str) -> None:
+        """Handles the death of the blob."""
+        if not self.alive: return # Already dead
+
+        self.alive = False
+        log.info(f"Blob {self.id} died of {reason}. Stats: Hunger={self.hunger}, Thirst={self.thirst}, Energy={self.energy}, Age(s)={self.age_ticks/config.TICK_RATE_HZ:.1f}")
+
+        # Optional: Drop a food resource upon death (recycle biomass)
+        # This uses the game_window_ref to access the world directly.
+        # Consider if this should be a separate event handled by the GameWindow.
+        world = self.game_window_ref.world
+        # Align coordinates to the grid
+        gx = (self.x // config.GRID_STEP) * config.GRID_STEP
+        gy = (self.y // config.GRID_STEP) * config.GRID_STEP
+        coord = (gx, gy)
+
+        if world.get_tile(self.x, self.y) == ResourceType.EMPTY:
+            world.tiles[coord] = ResourceType.FOOD # Use dictionary access
+            log.debug(f"Blob {self.id} dropped food at ({self.x}, {self.y}) upon death.")
